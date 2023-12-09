@@ -11,6 +11,7 @@ slack-bolt = "^1.18.1"
 fastapi = "^0.104.1"
 uvicorn = "^0.24.0.post1"
 asyncio = "^3.4.3"
+python-dotenv = "^1.0.0"
 
 
 [build-system]
