@@ -2,32 +2,49 @@ import os
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
+from openai import OpenAI
 from slack_bolt import App
 from slack_bolt.adapter.fastapi import SlackRequestHandler
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 load_dotenv()
 
+class GPTAgent:
+    def __init__(self):
+        self.client = OpenAI()
+
+    def generate_response(self, input_text: str) -> str:
+        completion = self.client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": input_text}
+            ],
+        )
+
+        return completion.choices[0].message.content
+
 class SlackBot:
-    def __init__(self, bot_token: str, app_token: str):
-        self.app = App(token=bot_token)
+    def __init__(self, agent: GPTAgent):
+        self.app = App()
         self.handler = SlackRequestHandler(self.app)
-        self.socket_mode_handler = SocketModeHandler(app=self.app, app_token=app_token)
+        self.socket_mode_handler = SocketModeHandler(app=self.app)
+        self.agent = agent
 
     def start_socket_mode(self):
         self.socket_mode_handler.start()
 
     def setup_event_handlers(self):
         @self.app.event("app_mention")
-        def mention_handler(event: dict, say):
+        def handle_app_mention(event: dict, say):
             user_id: str = event['user']
             thread_ts: str = event.get('thread_ts') or event['ts']
-            say(text=f"<@{user_id}>님이 호출하셨습니다!", thread_ts=thread_ts)
 
-SLACK_BOT_TOKEN: str = os.environ.get("SLACK_BOT_TOKEN", "")
-SLACK_APP_TOKEN: str = os.environ.get("SLACK_APP_TOKEN", "")
+            response = self.agent.generate_response(event['text'])
+            say(text=response, thread_ts=thread_ts)
 
-slack_bot: SlackBot = SlackBot(SLACK_BOT_TOKEN, SLACK_APP_TOKEN)
+gpt_agent: GPTAgent = GPTAgent()
+slack_bot: SlackBot = SlackBot(gpt_agent)
 slack_bot.setup_event_handlers()
 
 app: FastAPI = FastAPI()
