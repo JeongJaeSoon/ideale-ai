@@ -1,40 +1,54 @@
+import asyncio
 import os
+import signal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
-from slack_bolt import App
-from slack_bolt.adapter.fastapi import SlackRequestHandler
-from slack_bolt.adapter.socket_mode import SocketModeHandler
+from fastapi import FastAPI
 
-load_dotenv()
+from bot.agent import Agent
+from bot.slack_bot import SlackBot
+from bot.types.slack_info import SlackInfo
 
-class SlackBot:
-    def __init__(self, bot_token: str, app_token: str):
-        self.app = App(token=bot_token)
-        self.handler = SlackRequestHandler(self.app)
-        self.socket_mode_handler = SocketModeHandler(app=self.app, app_token=app_token)
-
-    def start_socket_mode(self):
-        self.socket_mode_handler.start()
-
-    def setup_event_handlers(self):
-        @self.app.event("app_mention")
-        def mention_handler(event: dict, say):
-            user_id: str = event['user']
-            thread_ts: str = event.get('thread_ts') or event['ts']
-            say(text=f"<@{user_id}>님이 호출하셨습니다!", thread_ts=thread_ts)
-
-SLACK_BOT_TOKEN: str = os.environ.get("SLACK_BOT_TOKEN", "")
-SLACK_APP_TOKEN: str = os.environ.get("SLACK_APP_TOKEN", "")
-
-slack_bot: SlackBot = SlackBot(SLACK_BOT_TOKEN, SLACK_APP_TOKEN)
-slack_bot.setup_event_handlers()
-
+load_dotenv(override=True)
 app: FastAPI = FastAPI()
 
-@app.post("/slack/events")
-async def slack_events(request: Request):
-    return await slack_bot.handler.handle(request)
-
 if __name__ == "__main__":
-    slack_bot.start_socket_mode()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    async def socket_mode_handler():
+        slack_info: SlackInfo = SlackInfo(
+            slack_bot_token=os.environ["SLACK_BOT_TOKEN"],
+            slack_app_token=os.environ["SLACK_APP_TOKEN"],
+            slack_signing_secret=os.environ["SLACK_SIGNING_SECRET"],
+            slack_bot_member_id=os.environ["SLACK_BOT_MEMBER_ID"],
+        )
+
+        slack_bot = SlackBot(
+            agent=Agent(),
+            slack_info=slack_info,
+        )
+
+        task = loop.create_task(slack_bot.async_socket_mode_handler.start_async())
+
+        async def graceful_shutdown():
+            await slack_bot.async_socket_mode_handler.close_async()
+
+            inflight_tasks = [
+                t for t in asyncio.all_tasks(loop) if t not in [
+                    root_task, task, asyncio.current_task(loop)
+                ]
+            ]
+            await asyncio.gather(*inflight_tasks)
+
+            task.cancel()
+
+        loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(graceful_shutdown()))
+
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    root_task = loop.create_task(socket_mode_handler())
+    loop.run_until_complete(root_task)
